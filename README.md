@@ -1,4 +1,4 @@
-### NeuroTalk: Voice Reconstruction from Brain Signals
+# NeuroTalk: Voice Reconstruction from Brain Signals
 
 
 
