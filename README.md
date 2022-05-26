@@ -1,4 +1,7 @@
-### Hi there 👋
+### NeuroTalk: Voice Reconstruction from Brain Signals
+
+
+
 
 <!--
 **NeuroTalk/NeuroTalk** is a ✨ _special_ ✨ repository because its `README.md` (this file) appears on your GitHub profile.
