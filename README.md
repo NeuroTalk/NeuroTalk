@@ -26,7 +26,7 @@ python eval.py --model-file mymodel.pth --benchmark example
 ## Pre-trained Models
 
 You can download pretrained models here:
-- [Pretrained model](https://drive.google.com/mymodel.pth) trained on participant 1
+- [Pretrained model](https://drive.google.com/drive/folders/1_xqvX33fEK3HxaBr4kr_msS9q0Jl2beB?usp=sharing) trained on participant 1
 
 
 ## Results
