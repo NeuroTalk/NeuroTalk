@@ -8,7 +8,7 @@ import numpy as np
 import torchaudio
 
     
-def train(args, train_loader, models, criterions, optimizers, epoch, trainValid=True):
+def eval(args, train_loader, models, criterions, optimizers, epoch, trainValid=False):
     '''
     :param args: general arguments
     :param train_loader: loaded for training/validation/test dataset
