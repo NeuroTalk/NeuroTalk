@@ -8,11 +8,12 @@ To install requirements:
 pip install -r requirements.txt
 ```
 
-
 ## Training
 To train the model in the paper, run this command:
 ```train
-python train.py --input-data <path_to_data> --alpha 10 --beta 20
+python train.py pretrain_model/UNIVERSAL_V1/g_02500000 --task SpokenEEG_vec --batch_size 10
+
+python train.py pretrain_model/SpokenEEG/ pretrain_model/UNIVERSAL_V1/g_02500000 --task ImaginedEEG_vec --batch_size 10
 ```
 >📋 the arguments of models
 
@@ -20,7 +21,9 @@ python train.py --input-data <path_to_data> --alpha 10 --beta 20
 To evaluate my model on an example data, run:
 
 ```eval
-python eval.py --model-file mymodel.pth --benchmark example
+python eval.py pretrain_model/SpokenEEG/ pretrain_model/UNIVERSAL_V1/g_02500000 --task SpokenEEG_vec
+
+python eval.py pretrain_model/ImaginedEEG/ pretrain_model/UNIVERSAL_V1/g_02500000 --task ImaginedEEG_vec
 ```
 
 ## Pre-trained Models
@@ -29,8 +32,6 @@ You can download pretrained models here:
 - [Pretrained model](https://drive.google.com/drive/folders/1x6GNHzAQkqL5eQmIcPTjVPb9D5dtx02W?usp=sharing) trained on participant 1
 
 
-## Results
-Our model achieves the following performance on :
 
 ## Contributing
 - We generated voice from the EEG of imagined speech. The fundamental constraint of the imagined speech-based BTS system lacking the ground truth voice have been addressed with generalized EEG of spoken speech to link the imagined speech EEG, spoken speech EEG, and the spoken speech audio.
