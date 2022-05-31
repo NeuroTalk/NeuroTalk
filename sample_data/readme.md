@@ -2,7 +2,7 @@
 Since the dataset contains human-derived biosignal, we only open a small amount of sample dataset to reproduce and run our code.
 
 ### Test data
-Five test data were provided, including the words 'yes', 'help me', 'water', 'pain', 'hello'.
+Five test data were provided, including the words 'yes', 'hello', 'help me', 'water', 'pain'.
 
 ### Infer
 To evaluate the trained model for spoken EEG on an example data, run:
