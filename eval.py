@@ -3,7 +3,7 @@ import torch
 from models import models as networks
 from models.models_HiFi import Generator as model_HiFi
 from modules import DTW_align, GreedyCTCDecoder, AttrDict, RMSELoss
-from utils import data_denorm, audio_denorm, mel2wav_vocoder, perform_STT_bundle, imgSave
+from utils import data_denorm, mel2wav_vocoder, perform_STT, imgSave
 import torch.nn as nn
 import torch.nn.functional as F
 from NeuroTalkDataset import myDataset
@@ -14,9 +14,11 @@ import torchaudio
 from torchmetrics import CharErrorRate, WordErrorRate
 import json
 import argparse
+import matplotlib.pyplot as plt
+import librosa.display
+import wavio
     
-    
-def eval(args, train_loader, models, criterions, epoch):
+def eval(args, test_loader, models, criterions, epoch):
     '''
     :param args: general arguments
     :param train_loader: loaded for training/validation/test dataset
@@ -51,12 +53,10 @@ def eval(args, train_loader, models, criterions, epoch):
     epoch_acc_d_real = []
     epoch_acc_d_fake = []
 
-    total_batches = len(train_loader)
+    total_batches = len(test_loader)
     
-    for i, (input, target, target_cl, voice, data_info) in enumerate(train_loader):    
-        start_time = time.time()
+    for i, (input, target, target_cl, voice, data_info) in enumerate(test_loader):    
         
-
         print("\rBatch [%5d / %5d]"%(i,total_batches), sep=' ', end='', flush=True)
         
         # Adversarial ground truths 1:real, 0: fake
@@ -79,7 +79,7 @@ def eval(args, train_loader, models, criterions, epoch):
         
         # when not overt, DTW is needed
         out_DTW = output.clone()
-        if args.task[0] == 'I' and epoch > 100: 
+        if args.task[0] == 'I': 
             out_DTW = DTW_align(out_DTW, target)
         
         # generator loss
@@ -132,8 +132,7 @@ def eval(args, train_loader, models, criterions, epoch):
         with torch.no_grad():
             emission_gt, _ = model_STT(voice)
             emission_recon, _ = model_STT(wav_recon)
-       
-        
+
         # decoder STT
         transcript_gt = []
         transcript_recon = []
@@ -144,13 +143,12 @@ def eval(args, train_loader, models, criterions, epoch):
                 
             transcript = decoder_STT(emission_recon[j])
             transcript_recon.append(transcript)
-
         
         cer_gt = CER(transcript_gt, gt_label)
         cer_recon = CER(transcript_recon, gt_label)
 
         # total generator loss
-        loss_g = args.l_g[0] * loss1 + args.l_g[2] * loss_valid + args.l_g[3] * cer_recon 
+        loss_g = args.l_g[0] * loss1 + args.l_g[1] * loss_valid + args.l_g[2] * cer_recon 
         
         # accuracy
         acc_g_valid = (g_valid.round() == valid).float().mean()
@@ -194,7 +192,6 @@ def eval(args, train_loader, models, criterions, epoch):
         epoch_acc_d_fake.append(acc_d_fake.item())
         
 
-        time_taken = time.time() - start_time
         
     args.loss_g = sum(epoch_loss_g) / len(epoch_loss_g)
     args.loss_g_recon = sum(epoch_loss_g_recon) / len(epoch_loss_g_recon)
@@ -208,14 +205,117 @@ def eval(args, train_loader, models, criterions, epoch):
     args.acc_d_real = sum(epoch_acc_d_real) / len(epoch_acc_d_real)
     args.acc_d_fake = sum(epoch_acc_d_fake) / len(epoch_acc_d_fake)
 
-    print('\n[%3d/%3d] G_valid: %.4f D_R: %.4f D_F: %.4f / CER-gt: %.4f CER-recon: %.4f / g-RMSE: %.4f g-lossValid: %.4f Time: %.4f' 
-          % (i, total_batches, 
-             args.acc_g_valid, args.acc_d_real, args.acc_d_fake, 
-             args.cer_gt, args.cer_recon, 
-             args.loss_g_recon, args.loss_g_valid, time_taken))
-    
-    return args
+    return (args.loss_g, args.loss_g_recon, args.loss_g_valid, args.acc_g_valid, args.cer_gt, args.cer_recon, args.loss_d, args.loss_d_valid, args.acc_d_real, args.acc_d_fake)
 
+
+def save_test_all(args, test_loader, models, save_idx=None):
+    model_g = models[0].eval()
+    # model_d = models[1].eval()
+    vocoder = models[2].eval()
+    model_STT = models[3].eval()
+    decoder_STT = models[4]
+    
+    save_idx=0
+    for i, (input, target, target_cl, voice, data_info) in enumerate(test_loader):
+            
+        input = input.cuda()
+        target = target.cuda()
+        voice = torch.squeeze(voice,dim=-1).cuda()
+        labels = torch.argmax(target_cl,dim=1)    
+        
+        with torch.no_grad():
+            # run the mdoel
+            output = model_g(input)
+    
+        target = data_denorm(target, data_info[0], data_info[1])
+        output = data_denorm(output, data_info[0], data_info[1])
+        
+        gt_label=[]
+        for k in range(len(target)):
+            gt_label.append(args.word_label[labels[k].item()])
+            
+        wav_target = mel2wav_vocoder(target, vocoder, 1)
+        wav_recon = mel2wav_vocoder(output, vocoder, 1)
+        
+        wav_target = torch.reshape(wav_target, (len(wav_target),wav_target.shape[-1]))
+        wav_recon = torch.reshape(wav_recon, (len(wav_recon),wav_recon.shape[-1]))
+        
+        wav_target = torchaudio.functional.resample(wav_target, args.sample_rate_mel, args.sample_rate_STT)  
+        wav_recon = torchaudio.functional.resample(wav_recon, args.sample_rate_mel, args.sample_rate_STT)  
+        
+        if wav_target.shape[1] !=  voice.shape[1]:
+            p = voice.shape[1] - wav_target.shape[1]
+            p_s = p//2
+            p_e = p-p_s
+            wav_target = F.pad(wav_target, (p_s,p_e))
+            
+        if wav_recon.shape[1] !=  voice.shape[1]:
+            p = voice.shape[1] - wav_recon.shape[1]
+            p_s = p//2
+            p_e = p-p_s
+            wav_recon = F.pad(wav_recon, (p_s,p_e))
+            
+        ##### STT Wav2Vec 2.0
+        transcript_target, _, _ = perform_STT(wav_target, model_STT, decoder_STT, gt_label, 1)
+        transcript_recon, _, _ = perform_STT(wav_recon, model_STT, decoder_STT, gt_label, 1)
+        transcript_voice, _, _ = perform_STT(voice, model_STT, decoder_STT, gt_label, 1)
+        
+        wav_target = wav_target.cpu().detach().numpy()
+        wav_recon = wav_recon.cpu().detach().numpy()
+        voice = voice.cpu().detach().numpy()
+        
+        for batch_idx in range(len(input)):
+            # mel pectogram save
+            fig, (ax1, ax2) = plt.subplots(2,1)
+            img = librosa.display.specshow(target[batch_idx].cpu().detach().numpy(), x_axis='time',
+                                      y_axis='mel', sr=args.sample_rate_mel,
+                                      hop_length=256,
+                                      ax=ax1)
+            fig.colorbar(img, ax=ax1, format='%+2.0f dB')
+            ax1.set(title='Original Mel-spectogram')
+            
+            img = librosa.display.specshow(output[batch_idx].cpu().detach().numpy(), x_axis='time',
+                                      y_axis='mel', sr=args.sample_rate_mel,
+                                      hop_length=256,
+                                      ax=ax2)
+            fig.colorbar(img, ax=ax2, format='%+2.0f dB')
+            ax2.set(title='Reconstructed Mel-spectogram')
+            
+            
+            str_tar = args.word_label[labels[batch_idx].item()].replace("|", ",")
+            str_tar = str_tar.replace(" ", ",")
+            
+            str_pred = transcript_recon[batch_idx].replace("|", ",")
+            str_pred = str_pred.replace(" ", ",")
+            
+            if args.task[0] == 'I':
+                imgSave(args.savefig, '/' + "%03d_"%(save_idx+1) +'target_IM_{}-pred_{}'.format(str_tar,str_pred))
+            else:
+                imgSave(args.savefig, '/' + "%03d_"%(save_idx+1) +'target_OV_{}-pred_{}'.format(str_tar,str_pred))
+    
+    
+            # Audio save
+            if args.task[0] == 'I':
+                title = "Recon_IM_{}-pred_{}".format(str_tar, str_pred)
+                wavio.write(args.savevoice + "/" + "%03d_"%(save_idx+1) + title + ".wav", 
+                            wav_recon[batch_idx], args.sample_rate_STT, sampwidth=1)
+                
+            else:
+                title = "Recon_SP_{}-pred_{}".format(str_tar, str_pred)
+            
+                wavio.write(args.savevoice + "/" + "%03d_"%(save_idx+1) + title + ".wav", 
+                            wav_recon[batch_idx], args.sample_rate_STT, sampwidth=1)
+        
+                title = "Target"
+                
+                wavio.write(args.savevoice + "/" + "%03d_"%(save_idx+1) + title + ".wav", 
+                            wav_target[batch_idx], args.sample_rate_STT, sampwidth=1)
+                
+                title = "Original"
+                
+                wavio.write(args.savevoice + "/" + "%03d_"%(save_idx+1) + title + ".wav", 
+                            voice[batch_idx], args.sample_rate_STT, sampwidth=1)
+            save_idx=save_idx+1
 
 def main(args):
     
@@ -237,8 +337,11 @@ def main(args):
         data = f.read()
     json_config = json.loads(data)
     h_g = AttrDict(json_config)
-
     model_g = networks.Generator(h_g).cuda()
+    
+    args.sample_rate_mel = h_g.sampling_rate
+    args.l_g = h_g.l_g
+    args.word_label  = h_g.word_label
     
     # define discriminator
     config_file = os.path.join(os.path.split(args.trained_model)[0], 'config_d.json')
@@ -246,7 +349,6 @@ def main(args):
         data = f.read()
     json_config = json.loads(data)
     h_d = AttrDict(json_config)
-
     model_d = networks.Discriminator(h_d).cuda()
     
     # vocoder HiFiGAN
@@ -265,6 +367,7 @@ def main(args):
     # STT Wav2Vec
     bundle = torchaudio.pipelines.HUBERT_ASR_LARGE
     model_STT = bundle.get_model().cuda()
+    args.sample_rate_STT = bundle.sample_rate
     decoder_STT = GreedyCTCDecoder(labels=bundle.get_labels())
     
     # Parallel setting
@@ -279,10 +382,7 @@ def main(args):
     if os.path.isfile(loc_g):
         print("=> loading checkpoint '{}'".format(loc_g))
         checkpoint_g = torch.load(loc_g, map_location='cpu')
-        start_epoch = checkpoint_g['epoch']
         model_g.load_state_dict(checkpoint_g['state_dict'])
-        print("=> loaded checkpoint: epoch {})"
-              .format(checkpoint_g['epoch']))
     else:
         print("=> no checkpoint found at '{}'".format(loc_g))
         
@@ -297,39 +397,54 @@ def main(args):
     CER = CharErrorRate().cuda()
     WER = WordErrorRate().cuda()
     
-    if not os.path.exists(args.save):
-        os.mkdir(args.save)
+    saveDir = args.save + '_' + args.sub
+    # create the directory if not exist
+    if not os.path.exists(saveDir):
+        os.mkdir(saveDir)
+    
+    args.savevoice = saveDir + '/savevoice'
+    if not os.path.exists(args.savevoice):
+        os.mkdir(args.savevoice)
+    
+    args.savefig = saveDir + '/savefig'
+    if not os.path.exists(args.savefig):
+        os.mkdir(args.savefig)
     
     # Data loader define
-    testset = myDataset(mode=1, data=args.dataLoc,task=args.task,recon=args.recon)  
+    testset = myDataset(mode=1, data=args.dataLoc+'/'+args.sub, task=args.task, recon=args.recon)  
     test_loader = torch.utils.data.DataLoader(
         testset, batch_size=args.batch_size, shuffle=False, num_workers=4*len(args.gpuNum), pin_memory=True)
     
-    max_epochs = 1000
-    epoch = start_epoch
-    for epoch in range(start_epoch, max_epochs):
-        start_time = time.time()
-        
-        print("Epoch : %d/%d" %(epoch, max_epochs) )
-
-        args = eval(args, test_loader, 
-                    (model_g, model_d, vocoder, model_STT, decoder_STT), 
-                    (criterion_recon, criterion_adv, CER, WER), 
-                    epoch) 
-
-        time_taken = time.time() - start_time
-        print("Time: %.2f\n"%time_taken)
     
+    max_epochs = 1
+    epoch = 0
+    
+    start_time = time.time()
+    
+    print("Epoch : %d/%d" %(epoch, max_epochs) )
+
+    Ts_losses = eval(args, test_loader, 
+                     (model_g, model_d, vocoder, model_STT, decoder_STT), 
+                     (criterion_recon, criterion_adv, CER, WER), 
+                     epoch) 
+
+    time_taken = time.time() - start_time
+    print("Time: %.2f\n"%time_taken)
+    
+    save_test_all(args, test_loader, (model_g, model_d, vocoder, model_STT, decoder_STT), Ts_losses)
     
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Hyperparams')
     parser.add_argument('trained_model', help='config & checkpoint for G & D folder path')
     parser.add_argument('vocoder_pre', help='pretrained vocoder file path')
     parser.add_argument('--gpuNum', type=int, default=[0])
-    parser.add_argument('--save', type=str, default='./')
-    parser.add_argument('--dataLoc', type=str, default='./sample_data/')
+    parser.add_argument('--dataLoc', type=str, default='./sample_data')
+    parser.add_argument('--sub', type=str, default='sub1')
     parser.add_argument('--task', type=str, default='SpokenEEG_vec')
     parser.add_argument('--recon', type=str, default='Voice_mel')
+    parser.add_argument('--batch_size', type=int, default=5)
+    parser.add_argument('--save', type=str, default='./TestResult')
+
     args = parser.parse_args()
 
     main(args)        
@@ -337,9 +452,6 @@ if __name__ == '__main__':
     
     
     
-
-
-
 
 
 

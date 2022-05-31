@@ -3,10 +3,10 @@ import torch
 from models import models as networks
 from models.models_HiFi import Generator as model_HiFi
 from modules import DTW_align, GreedyCTCDecoder, AttrDict, RMSELoss
-from utils import data_denorm, audio_denorm, mel2wav_vocoder, perform_STT_bundle, imgSave
+from utils import data_denorm, mel2wav_vocoder, perform_STT, imgSave
 import torch.nn as nn
 import torch.nn.functional as F
-from myDataset import myDataset
+from NeuroTalkDataset import myDataset
 import time
 import torch.optim.lr_scheduler
 import numpy as np
@@ -14,6 +14,10 @@ import torchaudio
 from torchmetrics import CharErrorRate, WordErrorRate
 import json
 import argparse
+import matplotlib.pyplot as plt
+import librosa.display
+import wavio
+
     
 def train(args, train_loader, models, criterions, optimizers, epoch, trainValid=True):
     '''
@@ -27,7 +31,7 @@ def train(args, train_loader, models, criterions, optimizers, epoch, trainValid=
     '''
     
     # switch to train mode
-    assert type(models) != tuple, "More than two models should be inputed (generator and discriminator)"
+    assert type(models) == tuple, "More than two models should be inputed (generator and discriminator)"
         
     (model_g, model_d, vocoder, model_STT, decoder_STT) = models
     (criterion_recon, criterion_adv, CER, WER) =  criterions
@@ -62,8 +66,6 @@ def train(args, train_loader, models, criterions, optimizers, epoch, trainValid=
     total_batches = len(train_loader)
     
     for i, (input, target, target_cl, voice, data_info) in enumerate(train_loader):    
-        start_time = time.time()
-        
 
         print("\rBatch [%5d / %5d]"%(i,total_batches), sep=' ', end='', flush=True)
         
@@ -99,7 +101,7 @@ def train(args, train_loader, models, criterions, optimizers, epoch, trainValid=
             
         # when not overt, DTW is needed
         out_DTW = output.clone()
-        if args.task[0] == 'I' and epoch > 100: 
+        if args.task[0] == 'I' and epoch > 10: 
             out_DTW = DTW_align(out_DTW, target)
         
         # generator loss
@@ -171,7 +173,7 @@ def train(args, train_loader, models, criterions, optimizers, epoch, trainValid=
         cer_recon = CER(transcript_recon, gt_label)
 
         # total generator loss
-        loss_g = args.l_g[0] * loss1 + args.l_g[2] * loss_valid + args.l_g[3] * cer_recon 
+        loss_g = args.l_g[0] * loss1 + args.l_g[1] * loss_valid + args.l_g[2] * cer_recon 
         
         # accuracy
         acc_g_valid = (g_valid.round() == valid).float().mean()
@@ -191,30 +193,30 @@ def train(args, train_loader, models, criterions, optimizers, epoch, trainValid=
         else:
             epoch_cer_recon.append(cer_recon.item())
 
-        
-        loss_g.backward() 
-        optimizer_g.step()
+        if trainValid:
+            loss_g.backward() 
+            optimizer_g.step()
             
         ###############################
         # Train Discriminator
         ###############################
-        for p in model_g.parameters():
-            p.requires_grad_(False)  # freeze G
-            
-        if args.pretrained and args.prefreeze:
-            for total_ct, _ in enumerate(model_d.children()):
-                ct=0
-            for ct, child in enumerate(model_d.children()):
-                if ct > total_ct-1: # unfreeze classifier 
-                    for param in child.parameters():
-                        param.requires_grad = True  # unfreeze D    
-        else:
-            for p in model_d.parameters():
-                p.requires_grad_(True)  # unfreeze D   
-                    
+        if trainValid:
+            for p in model_g.parameters():
+                p.requires_grad_(False)  # freeze G
                 
-        # set zero grad
-        optimizer_d.zero_grad()
+            if args.pretrain and args.prefreeze:
+                for total_ct, _ in enumerate(model_d.children()):
+                    ct=0
+                for ct, child in enumerate(model_d.children()):
+                    if ct > total_ct-1: # unfreeze classifier 
+                        for param in child.parameters():
+                            param.requires_grad = True  # unfreeze D    
+            else:
+                for p in model_d.parameters():
+                    p.requires_grad_(True)  # unfreeze D   
+                    
+            # set zero grad
+            optimizer_d.zero_grad()
     
         # run model cl
         real_valid = model_d(target)
@@ -238,10 +240,9 @@ def train(args, train_loader, models, criterions, optimizers, epoch, trainValid=
         epoch_acc_d_real.append(acc_d_valid.item())
         epoch_acc_d_fake.append(acc_d_fake.item())
         
-        loss_d.backward()
-        optimizer_d.step()
-
-        time_taken = time.time() - start_time
+        if trainValid:
+            loss_d.backward()
+            optimizer_d.step()
 
         
     args.loss_g = sum(epoch_loss_g) / len(epoch_loss_g)
@@ -256,15 +257,100 @@ def train(args, train_loader, models, criterions, optimizers, epoch, trainValid=
     args.acc_d_real = sum(epoch_acc_d_real) / len(epoch_acc_d_real)
     args.acc_d_fake = sum(epoch_acc_d_fake) / len(epoch_acc_d_fake)
 
-
-    print('\n[%3d/%3d] G_valid: %.4f D_R: %.4f D_F: %.4f / CER-gt: %.4f CER-recon: %.4f / g-RMSE: %.4f g-losscl: %.4f g-lossValid: %.4f Time: %.4f' 
+    print('\n[%3d/%3d] G_valid: %.4f D_R: %.4f D_F: %.4f / CER-gt: %.4f CER-recon: %.4f / g-RMSE: %.4f g-lossValid: %.4f' 
           % (i, total_batches, 
              args.acc_g_valid, args.acc_d_real, args.acc_d_fake, 
              args.cer_gt, args.cer_recon, 
-             args.loss_g_recon, args.loss_g_cl, args.loss_g_valid, time_taken))
-    
-    return args
+             args.loss_g_recon, args.loss_g_valid))
+        
+        
+    return (args.loss_g, args.loss_g_recon, args.loss_g_valid, args.acc_g_valid, args.cer_gt, args.cer_recon, args.loss_d, args.loss_d_valid, args.acc_d_real, args.acc_d_fake)
 
+def drawMel(args, val_loader, models, epoch, losses):
+    
+    model_g = models.eval()
+    # model_cl = models[1].eval()
+
+    input, target, target_cl, _, data_info = next(iter(val_loader))    
+    
+    input = input.cuda()
+    target = target.cuda()
+    labels = torch.argmax(target_cl,dim=1)    
+    
+    with torch.no_grad():
+        # run the mdoel
+        decode = model_g(input)
+
+    target = data_denorm(target, data_info[0], data_info[1])
+    decode = data_denorm(decode, data_info[0], data_info[1])
+    
+    fig, (ax1, ax2) = plt.subplots(2,1)
+    img = librosa.display.specshow(target[0].cpu().detach().numpy(), x_axis='time',
+                              y_axis='mel', sr=args.sample_rate_mel,
+                              hop_length=256,
+                              ax=ax1)
+    fig.colorbar(img, ax=ax1, format='%+2.0f dB')
+    ax1.set(title='Original Mel-spectogram')
+    
+    img = librosa.display.specshow(decode[0].cpu().detach().numpy(), x_axis='time',
+                              y_axis='mel', sr=args.sample_rate_mel,
+                              hop_length=256,
+                              ax=ax2)
+    fig.colorbar(img, ax=ax2, format='%+2.0f dB')
+    ax2.set(title='Reconstructed Mel-spectogram')
+    
+    str_tar = args.word_label[labels[0].item()].replace("|", ",")
+    str_tar = str_tar.replace(" ", ",")
+    imgSave(args.savefig, '/e{}_{}'.format(str(str(epoch)), str_tar))
+    
+
+def saveVoice(args, test_loader, models, epoch, losses):
+    
+    model_g = models[0].eval()
+    # model_d = models[1].eval()
+    vocoder = models[2].eval()
+    model_STT = models[3].eval()
+    decoder_STT = models[4]
+
+    input, _, target_cl, voice, data_info = next(iter(test_loader))   
+    
+    input = input.cuda()
+    voice = torch.squeeze(voice,dim=-1).cuda()
+    labels = torch.argmax(target_cl,dim=1)    
+    
+    with torch.no_grad():
+        # run the mdoel
+        decode = model_g(input)
+        
+    decode = data_denorm(decode, data_info[0], data_info[1])
+    
+    wav_recon = mel2wav_vocoder(torch.unsqueeze(decode[0],dim=0), vocoder, 1)
+    wav_recon = torch.reshape(wav_recon, (len(wav_recon),wav_recon.shape[-1]))
+    wav_recon = torchaudio.functional.resample(wav_recon, args.sample_rate_mel, args.sample_rate_STT)  
+   
+    if wav_recon.shape[1] !=  voice.shape[1]:
+        p = voice.shape[1] - wav_recon.shape[1]
+        p_s = p//2
+        p_e = p-p_s
+        wav_recon = F.pad(wav_recon, (p_s,p_e))
+        
+    ##### STT Wav2Vec 2.0
+    gt_label=args.word_label[labels[0].item()]
+    
+    transcript_recon, _, _ = perform_STT(wav_recon, model_STT, decoder_STT, gt_label, 1)
+    
+    # save
+    wav_recon = wav_recon.cpu().detach().numpy()
+    
+    str_tar = args.word_label[labels[0].item()].replace("|", ",")
+    str_tar = str_tar.replace(" ", ",")
+    
+    str_pred = transcript_recon[0].replace("|", ",")
+    str_pred = str_pred.replace(" ", ",")
+    
+    title = "Tar_{}-Pred_{}".format(str_tar, str_pred)
+    wavio.write(args.savevoice + '/e{}_{}.wav'.format(str(str(epoch)), title), wav_recon, args.sample_rate_STT, sampwidth=1)
+        
 
 def save_checkpoint(state, is_best, save_path, filename):
     """
@@ -282,31 +368,36 @@ def save_checkpoint(state, is_best, save_path, filename):
 
 def main(args):
     
-    torch.cuda.set_device(args.device) # change allocation of current GPU
+    device = torch.device(f'cuda:{args.gpuNum[0]}' if torch.cuda.is_available() else "cpu")
+    torch.cuda.set_device(device) # change allocation of current GPU
     print ('Current cuda device ', torch.cuda.current_device()) # check
     print(torch.cuda.device_count())
     
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    torch.cuda.manual_seed(args.seed)
+    seed = 42
+    
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
 
     # define generator
-    config_file = os.path.join(os.path.split(args.HiFiGRU_config)[0], 'config_g.json')
+    config_file = os.path.join(os.path.split(args.trained_model)[0], 'config_g.json')
     with open(config_file) as f:
         data = f.read()
     json_config = json.loads(data)
     h_g = AttrDict(json_config)
-
     model_g = networks.Generator(h_g).cuda()
     
+    args.sample_rate_mel = h_g.sampling_rate
+    args.l_g = h_g.l_g
+    args.word_label  = h_g.word_label
+    
     # define discriminator
-    config_file = os.path.join(os.path.split(args.HiFiGRU_config)[0], 'config_d.json')
+    config_file = os.path.join(os.path.split(args.trained_model)[0], 'config_d.json')
     with open(config_file) as f:
         data = f.read()
     json_config = json.loads(data)
     h_d = AttrDict(json_config)
-
     model_d = networks.Discriminator(h_d).cuda()
     
     # vocoder HiFiGAN
@@ -325,53 +416,54 @@ def main(args):
     # STT Wav2Vec
     bundle = torchaudio.pipelines.HUBERT_ASR_LARGE
     model_STT = bundle.get_model().cuda()
+    args.sample_rate_STT = bundle.sample_rate
     decoder_STT = GreedyCTCDecoder(labels=bundle.get_labels())
     
     # Parallel setting
-    model_g = nn.DataParallel(model_g, device_ids=args.num_GPUs)
-    model_d = nn.DataParallel(model_d, device_ids=args.num_GPUs)
-    vocoder = nn.DataParallel(vocoder, device_ids=args.num_GPUs)
-    model_STT = nn.DataParallel(model_STT, device_ids=args.num_GPUs)
+    model_g = nn.DataParallel(model_g, device_ids=args.gpuNum)
+    model_d = nn.DataParallel(model_d, device_ids=args.gpuNum)
+    vocoder = nn.DataParallel(vocoder, device_ids=args.gpuNum)
+    model_STT = nn.DataParallel(model_STT, device_ids=args.gpuNum)
     
-    if args.pretrained:
-        if os.path.isfile(args.pretrainedLoc):
-            # pretrianed model
-            print("=> loading checkpoint '{}'".format(args.pretrainedLoc))
-            checkpoint = torch.load(args.pretrainedLoc, map_location='cpu')
-            checkpoint_cl = torch.load(args.pretrainedLoc_cl, map_location='cpu')
-            # args = checkpoint['args']
-            model_g.load_state_dict(checkpoint['state_dict'])
-            model_d.load_state_dict(checkpoint_cl['state_dict'])
-            print("=> loaded checkpoint '{}' (epoch {})"
-                  .format(args.pretrained, checkpoint['epoch']))
+    if args.pretrain:
+        loc_g = args.trained_model + 'checkpoint_g.pth.tar'
+        loc_d = args.trained_model + 'checkpoint_d.pth.tar'
+        
+        if os.path.isfile(loc_g):
+            print("=> loading checkpoint '{}'".format(loc_g))
+            checkpoint_g = torch.load(loc_g, map_location='cpu')
+            model_g.load_state_dict(checkpoint_g['state_dict'])
         else:
-            print("=> no Pretraoned model found at '{}'".format(args.pretrained))
-    
-    start_epoch = 0
-    if args.resume:  
-        if os.path.isfile(args.resumeLoc):
-            print("=> loading checkpoint '{}'".format(args.resumeLoc))
-            checkpoint = torch.load(args.resumeLoc, map_location='cpu')
-            checkpoint_cl = torch.load(args.resumeLoc_cl, map_location='cpu')
-            start_epoch = checkpoint['epoch']
-            # args = checkpoint['args']
-            model_g.load_state_dict(checkpoint['state_dict'])
-            model_d.load_state_dict(checkpoint_cl['state_dict'])
-            print("=> loaded checkpoint '{}' (epoch {})"
-                  .format(args.resume, checkpoint['epoch']))
+            print("=> no checkpoint found at '{}'".format(loc_g))
+            
+        if os.path.isfile(loc_d):   
+            checkpoint_d = torch.load(loc_d, map_location='cpu')
+            model_d.load_state_dict(checkpoint_d['state_dict'])
         else:
-            print("=> no checkpoint found at '{}'".format(args.resume))
+            print("=> no checkpoint found at '{}'".format(loc_d))
+        
 
     criterion_recon = RMSELoss().cuda()
     criterion_adv = nn.BCELoss().cuda()
     CER = CharErrorRate().cuda()
     WER = WordErrorRate().cuda()
     
-    if not os.path.exists(args.save):
-        os.mkdir(args.save)
-
-    if not os.path.exists(args.savedir):
-        os.mkdir(args.savedir)
+    saveDir = args.save + '_' + args.sub + '_' + args.task
+    # create the directory if not exist
+    if not os.path.exists(saveDir):
+        os.mkdir(saveDir)
+    
+    args.savevoice = saveDir + '/epovoice'
+    if not os.path.exists(args.savevoice):
+        os.mkdir(args.savevoice)
+    
+    args.savefig = saveDir + '/epofig'
+    if not os.path.exists(args.savefig):
+        os.mkdir(args.savefig)
+        
+    args.savemodel = saveDir + '/savemodel'
+    if not os.path.exists(args.savemodel):
+        os.mkdir(args.savemodel)
 
     optimizer_g = torch.optim.AdamW(model_g.parameters(), lr=args.lr_g, betas=(0.8, 0.99), weight_decay=0.01)
     optimizer_d = torch.optim.AdamW(model_d.parameters(), lr=args.lr_d, betas=(0.8, 0.99), weight_decay=0.01)
@@ -381,17 +473,22 @@ def main(args):
     
     
     # Data loader define
-    generator = torch.Generator().manual_seed(args.seed)
-    trainset = myDataset(mode=0, data=args.savedata,task=args.task,recon=args.recon)  # file='./EEG_EC_Data_csv/train.txt'
+    generator = torch.Generator().manual_seed(seed)
+    
+    trainset = myDataset(mode=0, data=args.dataLoc+'/'+args.sub, task=args.task, recon=args.recon)
     train_loader = torch.utils.data.DataLoader(
-        trainset, batch_size=args.batch_size, shuffle=True, generator=generator, num_workers=args.num_workers, pin_memory=True)
+        trainset, batch_size=args.batch_size, shuffle=True, generator=generator, num_workers=4*len(args.gpuNum), pin_memory=True)
+    
+    valset = myDataset(mode=2, data=args.dataLoc+'/'+args.sub, task=args.task, recon=args.recon)
+    val_loader = torch.utils.data.DataLoader(
+        valset, batch_size=args.batch_size, shuffle=True, generator=generator, num_workers=4*len(args.gpuNum), pin_memory=True)
 
     lr_g = 0
     lr_d = 0
-    epoch = start_epoch
+    best_loss = 1000
     is_best = False
     
-    for epoch in range(start_epoch, args.max_epochs):
+    for epoch in range(args.max_epochs):
         start_time = time.time()
         scheduler_g.step(epoch)
         scheduler_d.step(epoch)
@@ -405,32 +502,37 @@ def main(args):
         print("Learning rate for G: %.9f" %lr_g)
         print("Learning rate for D: %.9f" %lr_d)
 
-        args = train(args, train_loader, 
-                     (model_g, model_d, vocoder, model_STT, decoder_STT), 
-                     (criterion_recon, criterion_adv, CER, WER), 
-                     (optimizer_g, optimizer_d), 
-                     epoch) 
-
+        Tr_losses = train(args, train_loader, 
+                          (model_g, model_d, vocoder, model_STT, decoder_STT), 
+                          (criterion_recon, criterion_adv, CER, WER), 
+                          (optimizer_g, optimizer_d), 
+                          epoch,
+                          True) 
+        
+        Val_losses = train(args, train_loader, 
+                           (model_g, model_d, vocoder, model_STT, decoder_STT), 
+                           (criterion_recon, criterion_adv, CER, WER), 
+                           [], 
+                           epoch,
+                           False)
+        
         # Save checkpoint
-        state_g = {'epoch': epoch + 1,
-                   'arch': str(model_g),
-                   'state_dict': model_g.state_dict(),
-                   'lossGTr': args.loss_g,
-                   'lossGTs': args.loss_g,
-                   'lossGVal': args.loss_g,
-                   ' lr': lr_g}
+        state_g = {'arch': str(model_g),
+                 'state_dict': model_g.state_dict()}
         
-        state_d = {'epoch': epoch + 1,
-                   'arch': str(model_d),
-                   'state_dict': model_d.state_dict(),
-                   'lossDTr': args.loss_d,
-                   'lossDTs': args.loss_d,
-                   'lossDVal': args.loss_d,
-                   ' lr': lr_d}
-
+        state_d = {'arch': str(model_d),
+                 'state_dict': model_d.state_dict()}
         
-        save_checkpoint(state_g, is_best, args.savedir, 'checkpoint_g.pth.tar')
-        save_checkpoint(state_d, is_best, args.savedir, 'checkpoint_d.pth.tar')
+        # Did validation loss improve?
+        loss_total =  Val_losses[0]
+        is_best = loss_total < best_loss
+        best_loss = min(loss_total, best_loss)
+        
+        save_checkpoint(state_g, is_best, args.savemodel, 'checkpoint_g.pth.tar')
+        save_checkpoint(state_d, is_best, args.savemodel, 'checkpoint_d.pth.tar')
+        
+        drawMel(args, val_loader, model_g, epoch, (Tr_losses, Val_losses))
+        saveVoice(args, val_loader, (model_g, model_d, vocoder, model_STT, decoder_STT), epoch, (Tr_losses, Val_losses))
         
         time_taken = time.time() - start_time
         print("Time: %.2f\n"%time_taken)
@@ -438,13 +540,22 @@ def main(args):
     
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Hyperparams')
-    parser.add_argument('trained_model', help='config & checkpoint for G & D folder path')
+    parser.add_argument('trained_model', help='config for G & D folder path')
     parser.add_argument('vocoder_pre', help='pretrained vocoder file path')
+    parser.add_argument('--pretrain', type=bool, default=False)
+    parser.add_argument('--prefreeze', type=bool, default=False)
     parser.add_argument('--gpuNum', type=int, default=[0])
-    parser.add_argument('--save', type=str, default='./')
-    parser.add_argument('--dataLoc', type=str, default='./sample_data/')
+    parser.add_argument('--dataLoc', type=str, default='./sample_data')
+    parser.add_argument('--sub', type=str, default='sub1')
     parser.add_argument('--task', type=str, default='SpokenEEG_vec')
     parser.add_argument('--recon', type=str, default='Voice_mel')
+    parser.add_argument('--batch_size', type=int, default=5)
+    parser.add_argument('--max_epochs', type=int, default=1000)
+    parser.add_argument('--lr_g', type=int, default=1e-4*2)
+    parser.add_argument('--lr_g_decay', type=int, default=0.999)
+    parser.add_argument('--lr_d', type=int, default=1e-4*2)
+    parser.add_argument('--lr_d_decay', type=int, default=0.999)
+    parser.add_argument('--save', type=str, default='./TrainResult')
     args = parser.parse_args()
 
     main(args)        

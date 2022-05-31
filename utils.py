@@ -42,32 +42,7 @@ def mel2wav_vocoder(mel, vocoder, mini_batch=2):
     return wav_recon
 
 
-def perform_STT(wave, model_STT, decoder_STT, gt_label, mini_batch=10):
-    # model STT
-    emission = []
-    with torch.inference_mode():
-        for j in range(len(wave)//mini_batch):
-            em_ = model_STT(wave[mini_batch*j:mini_batch*j+mini_batch]).logits
-            emission.append(em_.cpu().detach().numpy())
-    emission_recon = torch.Tensor(np.array(emission)).cuda()
-    emission_recon = torch.reshape(emission_recon, (len(wave),emission_recon.shape[2],emission_recon.shape[3]))
-    predicted_ids_recon = torch.argmax(emission_recon, dim=-1)
-    
-    # decoder STT
-    transcripts = []
-    corr_num=0
-    for j in range(len(wave)):
-        transcript = decoder_STT.decode(predicted_ids_recon[j])    
-        transcripts.append(transcript)
-        
-        if transcript == gt_label[j]:
-            corr_num = corr_num + 1
-
-    acc_word = corr_num / len(wave)
-        
-    return transcripts, emission_recon, acc_word
-
-def perform_STT_bundle(wave, model_STT, decoder_STT, gt_label, mini_batch=10):
+def perform_STT(wave, model_STT, decoder_STT, gt_label, mini_batch=2):
     # model STT
     emission = []
     with torch.inference_mode():
@@ -75,8 +50,7 @@ def perform_STT_bundle(wave, model_STT, decoder_STT, gt_label, mini_batch=10):
             em_, _ = model_STT(wave[mini_batch*j:mini_batch*j+mini_batch])
             emission.append(em_.cpu().detach().numpy())
     emission_recon = torch.Tensor(np.array(emission)).cuda()
-    emission_recon = torch.reshape(emission_recon, (len(wave),emission_recon.shape[2],emission_recon.shape[3]))
-    # predicted_ids_recon = torch.argmax(emission_recon, dim=-1)
+    emission_recon = torch.reshape(emission_recon, (len(wave),emission_recon.shape[-2],emission_recon.shape[-1]))
     
     # decoder STT
     transcripts = []
@@ -110,9 +84,19 @@ def imgSave(dir, file_name):
     plt.clf()
 
 
-
-
-
+def word_index(word_label, bundle):
+    labels_ = ''.join(list(bundle.get_labels()))
+    word_indices = np.zeros((len(word_label), 15), dtype=np.int64)
+    word_length = np.zeros((len(word_label), ), dtype=np.int64)
+    for w in range(len(word_label)):
+        word = word_label[w]
+        label_idx = []
+        for ww in range(len(word)):
+            label_idx.append(labels_.find(word[ww]))
+        word_indices[w,:len(label_idx)] = torch.tensor(label_idx)
+        word_length[w] = len(label_idx)
+        
+    return word_indices, word_length
 
 
 
