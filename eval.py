@@ -265,36 +265,14 @@ def save_test_all(args, test_loader, models, save_idx=None):
         voice = voice.cpu().detach().numpy()
         
         for batch_idx in range(len(input)):
-            # mel pectogram save
-            fig, (ax1, ax2) = plt.subplots(2,1)
-            img = librosa.display.specshow(target[batch_idx].cpu().detach().numpy(), x_axis='time',
-                                      y_axis='mel', sr=args.sample_rate_mel,
-                                      hop_length=256,
-                                      ax=ax1)
-            fig.colorbar(img, ax=ax1, format='%+2.0f dB')
-            ax1.set(title='Original Mel-spectogram')
-            
-            img = librosa.display.specshow(output[batch_idx].cpu().detach().numpy(), x_axis='time',
-                                      y_axis='mel', sr=args.sample_rate_mel,
-                                      hop_length=256,
-                                      ax=ax2)
-            fig.colorbar(img, ax=ax2, format='%+2.0f dB')
-            ax2.set(title='Reconstructed Mel-spectogram')
-            
             
             str_tar = args.word_label[labels[batch_idx].item()].replace("|", ",")
             str_tar = str_tar.replace(" ", ",")
             
             str_pred = transcript_recon[batch_idx].replace("|", ",")
             str_pred = str_pred.replace(" ", ",")
-            
-            if args.task[0] == 'I':
-                imgSave(args.savefig, '/' + "%03d_"%(save_idx+1) +'target_IM_{}-pred_{}'.format(str_tar,str_pred))
-            else:
-                imgSave(args.savefig, '/' + "%03d_"%(save_idx+1) +'target_OV_{}-pred_{}'.format(str_tar,str_pred))
-    
-    
-            # Audio save
+
+            # Audio save 
             if args.task[0] == 'I':
                 title = "Recon_IM_{}-pred_{}".format(str_tar, str_pred)
                 wavio.write(args.savevoice + "/" + "%03d_"%(save_idx+1) + title + ".wav", 
@@ -405,10 +383,6 @@ def main(args):
     args.savevoice = saveDir + '/savevoice'
     if not os.path.exists(args.savevoice):
         os.mkdir(args.savevoice)
-    
-    args.savefig = saveDir + '/savefig'
-    if not os.path.exists(args.savefig):
-        os.mkdir(args.savefig)
     
     # Data loader define
     testset = myDataset(mode=1, data=args.dataLoc+'/'+args.sub, task=args.task, recon=args.recon)  

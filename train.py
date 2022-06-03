@@ -266,43 +266,7 @@ def train(args, train_loader, models, criterions, optimizers, epoch, trainValid=
         
     return (args.loss_g, args.loss_g_recon, args.loss_g_valid, args.acc_g_valid, args.cer_gt, args.cer_recon, args.loss_d, args.loss_d_valid, args.acc_d_real, args.acc_d_fake)
 
-def drawMel(args, val_loader, models, epoch, losses):
-    
-    model_g = models.eval()
-    # model_cl = models[1].eval()
 
-    input, target, target_cl, _, data_info = next(iter(val_loader))    
-    
-    input = input.cuda()
-    target = target.cuda()
-    labels = torch.argmax(target_cl,dim=1)    
-    
-    with torch.no_grad():
-        # run the mdoel
-        decode = model_g(input)
-
-    target = data_denorm(target, data_info[0], data_info[1])
-    decode = data_denorm(decode, data_info[0], data_info[1])
-    
-    fig, (ax1, ax2) = plt.subplots(2,1)
-    img = librosa.display.specshow(target[0].cpu().detach().numpy(), x_axis='time',
-                              y_axis='mel', sr=args.sample_rate_mel,
-                              hop_length=256,
-                              ax=ax1)
-    fig.colorbar(img, ax=ax1, format='%+2.0f dB')
-    ax1.set(title='Original Mel-spectogram')
-    
-    img = librosa.display.specshow(decode[0].cpu().detach().numpy(), x_axis='time',
-                              y_axis='mel', sr=args.sample_rate_mel,
-                              hop_length=256,
-                              ax=ax2)
-    fig.colorbar(img, ax=ax2, format='%+2.0f dB')
-    ax2.set(title='Reconstructed Mel-spectogram')
-    
-    str_tar = args.word_label[labels[0].item()].replace("|", ",")
-    str_tar = str_tar.replace(" ", ",")
-    imgSave(args.savefig, '/e{}_{}'.format(str(str(epoch)), str_tar))
-    
 
 def saveVoice(args, test_loader, models, epoch, losses):
     
@@ -456,10 +420,6 @@ def main(args):
     args.savevoice = saveDir + '/epovoice'
     if not os.path.exists(args.savevoice):
         os.mkdir(args.savevoice)
-    
-    args.savefig = saveDir + '/epofig'
-    if not os.path.exists(args.savefig):
-        os.mkdir(args.savefig)
         
     args.savemodel = saveDir + '/savemodel'
     if not os.path.exists(args.savemodel):
@@ -531,7 +491,6 @@ def main(args):
         save_checkpoint(state_g, is_best, args.savemodel, 'checkpoint_g.pth.tar')
         save_checkpoint(state_d, is_best, args.savemodel, 'checkpoint_d.pth.tar')
         
-        drawMel(args, val_loader, model_g, epoch, (Tr_losses, Val_losses))
         saveVoice(args, val_loader, (model_g, model_d, vocoder, model_STT, decoder_STT), epoch, (Tr_losses, Val_losses))
         
         time_taken = time.time() - start_time
