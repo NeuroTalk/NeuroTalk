@@ -2,7 +2,8 @@
 This repository is the official implementation of NeuroTalk: Voice Reconstruction from Brain Signals
 
 ## Requirements
-All algorithm are developed in Python 3.8
+All algorithm are developed in Python 3.8.
+
 To install requirements:
 
 ```setup
