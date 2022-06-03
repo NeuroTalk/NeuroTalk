@@ -4,8 +4,6 @@ import matplotlib.pyplot as plt
 import os
 import torch
 
-import torchaudio
-
 
 def audio_denorm(data):
     max_audio = 32768.0
