@@ -409,7 +409,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Hyperparams')
     parser.add_argument('trained_model', help='config & checkpoint for G & D folder path')
     parser.add_argument('vocoder_pre', help='pretrained vocoder file path')
-    parser.add_argument('--gpuNum', type=int, default=[0])
+    parser.add_argument('--gpuNum', type=list, default=[0])
     parser.add_argument('--dataLoc', type=str, default='./sample_data')
     parser.add_argument('--sub', type=str, default='sub1')
     parser.add_argument('--task', type=str, default='SpokenEEG_vec')
