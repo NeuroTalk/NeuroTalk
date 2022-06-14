@@ -467,7 +467,7 @@ def main(args):
                           epoch,
                           True) 
         
-        Val_losses = train(args, train_loader, 
+        Val_losses = train(args, val_loader, 
                            (model_g, model_d, vocoder, model_STT, decoder_STT), 
                            (criterion_recon, criterion_adv, CER, WER), 
                            [], 
